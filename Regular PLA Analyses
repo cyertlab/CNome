@@ -1,0 +1,211 @@
+//This macro looks analyzes PLA images
+//Needs a folder containing multiple image sets each contained in their own folder
+//Each subfolder contains 1 nuclear (DAPI) and 1 PLA image (Texas)
+//Returns two spreadsheet with total signal at the top and signal for each nuclei below
+//One sheet is PLA spot counts
+//One sheet is PLA signal
+//Also gives troubleshooting images: Defined nuc regions overlaying nuclei and PLA
+//PLA points overlaying PLA signal
+
+
+//Make sure you have one folder for each of these and all should be separate
+
+#@ File (label = "Input directory", style = "directory") input
+#@ File (label = "DAPI_Output directory", style = "directory") output_DAPI
+#@ File (label = "Texas_Output directory", style = "directory") output_Texas
+#@ File (label = "Data_Output directory", style = "directory") output_Data
+#@ File (label = "Spots_Output directory", style = "directory") output_Spots
+#@ File (label = "Troubleshoot_Output directory", style = "directory") output_Trouble
+
+processFolder(input);
+
+function processFolder(input) {
+	file_list = getFileList(input);
+//This is doing the preprocessing(Background sub, blurring, thresholding)
+	for (i = 0; i < file_list.length; i++) {
+		//Gets you the names of all the files in the big folder
+		img_list = getFileList(input+"/"+file_list[i]);
+		//Extracts the unique part of file name to name images later
+		Name_length = lengthOf(file_list[i]) - 1;
+		suffix = substring(file_list[i], 12, Name_length); 
+
+		//For DAPI
+		open(input+"/"+file_list[i]+"/"+img_list[0]);
+		first_name_DAPI = getTitle();
+		run("Duplicate...", " ");
+		run("Subtract Background...", "rolling=50");
+		run("Gaussian Blur...", "sigma=3");
+		setAutoThreshold("Huang dark");
+		run("Convert to Mask");
+		run("Watershed");
+		saveAs("Tiff", output_DAPI +"/Processed_DAPI_"+ suffix);
+		processed_to_close =getTitle();//Gets mask name to close it
+		run("Analyze Particles...", "size=500-Infinity show=Outlines display add");
+		outline_name_DAPI = getTitle();//Open Outline
+		close(processed_to_close);//close mask
+		close("Results");//close and clears results
+		
+		//Makes composite for DAPI and nuc outlines in troubleshooting
+		selectWindow(outline_name_DAPI);
+		run("Invert");
+		setOption("ScaleConversions", true);
+		run("8-bit");
+		run("Cyan");
+		
+		selectWindow(first_name_DAPI);
+		setOption("ScaleConversions", true);
+		run("8-bit");
+		run("Yellow");
+
+		run("Images to Stack", "name=Stack title=[] use");
+		Texas_stack_name = getTitle();
+		run("Make Composite", "display=Composite");
+		Texas_Comp_name = getTitle();
+		saveAs("Tiff", output_Trouble +"/DAPI_overlay"+suffix);
+		close();
+		close(outline_name_DAPI);
+		close(first_name_DAPI);
+		//Done making composite
+		
+		//for Texas
+		open(input+"/"+file_list[i]+"/"+img_list[1]);
+		run("Subtract Background...", "rolling=5");
+		saveAs("Tiff", output_Texas +"/Processed_Texas_"+suffix);
+		close();
+		
+		nROI =roiManager("count"); 
+		for (iRow = nROI - 1; iRow >= 0; iRow--){
+			roiManager("select", iRow);
+			roiManager("Delete");
+		}
+	}
+
+	DAPI_list = getFileList(output_DAPI);
+	Texas_list = getFileList(output_Texas);
+
+	//Running this section tells you how much texas red is in the cell and nucleus
+	for (i = 0; i < DAPI_list.length; i++) {
+		//Get the name for this set of outputs
+		suffix = substring(DAPI_list[i], 10);
+		//This opens the preprocessed Texas Red and thresholds and makes a mask
+		open(output_Texas+"/"+Texas_list[i]); //Open Texas
+		Texas_name = getTitle;
+		run("Duplicate...", " ");
+		run("Gaussian Blur...", "sigma=1");
+		setAutoThreshold("Huang dark");
+		run("Convert to Mask"); //Open Texas Mask
+		Texas_mask_name = getTitle;
+		imageCalculator("Multiply create 32-bit", Texas_name, Texas_mask_name);
+		Texas_result = getTitle; //Open Texas Result
+		close(Texas_name); //Close Texas
+		close(Texas_mask_name); //Close Texas mask
+		
+		//Opens DAPI mask and grabs ROIs
+		open(output_DAPI+"/"+DAPI_list[i]); //Open DAPI
+		run("Analyze Particles...", "size=500-Infinity show=Outlines display add");
+		DAPI_draw = getTitle();//Get name of drawing
+		close("Results"); //Close these blank results
+		close(DAPI_list[i]); //Close DAPI
+
+		//Measures total signal
+		run("ROI Manager...");
+		selectWindow(Texas_result);
+		run("Measure"); //Get total signal
+		roiManager("Show None");
+		roiManager("Show All");
+		roiManager("Measure"); // Get signal in each nuclei
+
+		nROI =roiManager("count"); 
+		for (iRow = nROI - 1; iRow >= 0; iRow--){
+			roiManager("select", iRow);
+			roiManager("Delete");
+		}
+		saveAs("Results", output_Data +"/nuclear_intensity" + suffix + ".csv");
+		close("Results");
+
+		selectWindow(DAPI_draw);
+		run("Invert");
+		setOption("ScaleConversions", true);
+		run("8-bit");
+		run("Cyan");
+		
+		selectWindow(Texas_result);
+		setOption("ScaleConversions", true);
+		run("8-bit");
+		run("Yellow");
+
+		run("Images to Stack", "name=Stack title=[] use");
+		Texas_stack_name = getTitle();
+		run("Make Composite", "display=Composite");
+		Texas_Comp_name = getTitle();
+		saveAs("Tiff", output_Trouble +"/Texas_Overlay"+suffix);
+		close();
+	}
+		//This counts puncta in FOV and in nuclei
+	for (i = 0; i < Texas_list.length; i++) {
+		
+		//Resets ROI manager
+		nROI =roiManager("count");
+		for (iRow = nROI - 1; iRow >= 0; iRow--){
+			roiManager("select", iRow);
+			roiManager("Delete");
+		}
+		
+		//Grabs name for output files
+		suffix = substring(DAPI_list[i], 10); 
+		
+		//Grab ROIs of nuclei
+		open(output_DAPI+"/"+DAPI_list[i]);//Open Dapi
+		run("Analyze Particles...", "size=500-Infinity show=Outlines display add");
+		close();//close drawing
+		close("Results");//close blank results
+		close(DAPI_list[i]);//close dapi
+
+		//This finds the maxima and save an image as tiff
+		open(output_Texas+"/"+Texas_list[i]);//open Texas red channel
+		Texas_name = getTitle();
+		run("Find Maxima...", "prominence=4000 strict output=[Single Points]");
+		saveAs("Tiff", output_Spots +"/PLA_Points_Image" + suffix);
+		Spots_name = getTitle();
+		//Measures total number of puncta (x255) so first line should be total signal
+		run("Measure");
+		
+		//Measures puncta per nuclei (x255)
+		run("ROI Manager...");
+		roiManager("Show None");
+		roiManager("Show All");
+		roiManager("Measure");
+		saveAs("Results", output_Data +"/PLA_Points Results" + suffix+".csv");
+		close("Results");
+
+		//Converts PLA channel to 8-bit and colors (maybe not needed)
+		selectWindow(Texas_name);
+		setOption("ScaleConversions", true);
+		run("8-bit");
+		run("Yellow");
+
+		//Converts spots channel to 8-bit and colors (maybe not needed)
+		selectWindow(Spots_name);
+		setOption("ScaleConversions", true);
+		run("8-bit");
+		run("Cyan");
+
+		//Combines image to stack and converts to composite to save
+		run("Images to Stack", "name=Stack title=[] use"); //closes original image
+		stack_name = getTitle();
+		run("Make Composite", "display=Composite");
+		Comp_name = getTitle();
+		saveAs("Tiff", output_Trouble +"/Spot-PLA_Overlay" + suffix);
+		close(); //close composite image
+		
+		close(Spots_name);
+		close(Texas_name);
+
+	}
+	//Resets ROI manager
+	nROI =roiManager("count");
+	for (iRow = nROI - 1; iRow >= 0; iRow--){
+		roiManager("select", iRow);
+		roiManager("Delete");
+	}
+}
